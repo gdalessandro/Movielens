@@ -1,0 +1,801 @@
+---
+title: |
+  | HarvardX Data Science
+  | Capstone Project I
+  | A Movielens Recommendation System
+author: "Guido D'Alessandro"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 5
+    fig_height: 2.5
+header-includes:
+geometry: margin=0.75in
+fontsize: 10pt
+urlcolor: blue
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+# Check if needed libraries are installed
+installed_packages <- rownames( installed.packages() )
+checkInstallPackage <- function(pckg) {
+  if ( !(pckg %in% installed_packages) ) {
+    install.packages("pckg")
+  }
+}
+
+# caret
+checkInstallPackage("caret")
+	
+# dslabs
+checkInstallPackage("dslabs")
+	
+# dslabs
+checkInstallPackage("dslabs")
+
+# lubridate
+checkInstallPackage("lubridate")
+	
+# ggrepel
+checkInstallPackage("ggrepel")
+
+# gridExtra
+checkInstallPackage("gridExtra")
+
+# knitr
+checkInstallPackage("knitr")
+
+# kableExtra
+checkInstallPackage("kableExtra")
+
+# tidyverse
+checkInstallPackage("tidyverse")
+
+# tinytex
+if ( !("tinytex" %in% installed_packages) ) {
+  # Requires a set path or reboot
+  # for Markup to detect it
+  install.packages("tinytex")
+  tinytex::install_tinytex()
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+options("vec.len" = 1)
+
+options(repos=structure(c(CRAN="https://cran.mtu.edu/")))
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,  collapse=TRUE, echo=FALSE,  fig.align='center')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# Save the script start time
+script_start <- proc.time()
+
+# Save the session information
+session_info <- sessionInfo()
+
+# Working directory
+raw_work_dir <- "~/datascience/capstone/movielens"
+work_dir <- normalizePath(raw_work_dir, winslash="/")
+
+# Used data files
+dataset_files <- c("data/downloaded/movielens.rds","data/rds/edx.rds","data/rds/validation.rds")
+
+# RMSE challenge levels
+RMSE_goal  <- 0.8567
+RMSE_top10 <- 0.8800
+RMSE_ldrbd <- 0.8890
+
+# Floating precisions
+rnd_rmse <- 4
+rnd_pct  <- 2
+
+
+f_sourceScript <- function(r_file) {
+  
+  # Create a Windows full path name
+  r_file    <- paste(raw_work_dir, "/R/", r_file, sep="")
+  file_path <- normalizePath(r_file, winslash="\\")
+  
+  if ( !file.exists(file_path) )
+  {
+    print( paste("File", r_file, "did not exist... Aborting execution") )
+    # No need to stop(), abort() or interrupt(), source will do that
+  }
+  
+  source( file_path )
+}
+
+```
+
+\newpage
+# Introduction {#introduction}  
+  
+  This report is a presentation of the process of selecting and evaluating some predictive models to be used in a fictitious post-mortem [Netflix’s 2006 forecasting challenge](https://en.wikipedia.org/wiki/Netflix_Prize), including some of the methods that were used by the winning team, sewn together by series of analyses for the purpose of improving the predictive power of the previous model, in a step-by-step approach, by way of minimizing the loss function, which for this case was chosen to be the root mean square error ([RMSE](https://en.wikipedia.org/wiki/Root-mean-square_deviation)) of the predictions. The report therefore, follows the presentation of a series of forecasting model improvements. Each of which is introduced after some justification based on the current model caveats and additional data inspections.
+
+  Recommendation systems do exactly what their name says they do—-they recommend something to clients. Their output is usually in the form of a rating, such as 4 out of 5 and 7.5 out of 10, for example. These ratings are designed to aid clients in making a selection among many choices. 
+  
+  In October 2006, Netflix offered a challenge to the data science community to improve their movie recommendation algorithm by 10% and thus win a million dollars. In September, 2009, [the winners were announced](http://bits.blogs.nytimes.com/2009/09/21/netflix-awards-1-million-prize-and-starts-a-new-contest/). To win the grand prize of \$1 million, the winning team achieved a RMSE of approximately `r RMSE_goal` [("BellKor's Pragmatic Chaos" team RMSE on the test data)](https://en.wikipedia.org/wiki/Netflix_Prize). To be included in the top 10 list we would need a RMSE of `r RMSE_top10` or bettwr. Finally, a RMSE of `r RMSE_ldrbd` would get us into the leaderboard. Let’s see how close we can get to these results.
+  
+\newpage
+# Data Inspections and Analyses {#inspection-analysis}
+
+## Introduction
+
+  The Netflix data used for the challenge is not publicly available, but the [GroupLens research lab](https://grouplens.org/) generated their own database with over 20 million ratings for over 27,000 movies by more than 138,000 users of which the Data Science staff of Harvard University made a small subset, available for download, which can be retrieved like this:
+```{r, echo=TRUE}
+# Set working directory
+print( paste("======= Setting working directory to", work_dir) )
+setwd(work_dir)
+
+# Verify working directory
+if ( getwd() != work_dir ) {
+  stop("Incorrect working directory")
+}
+print( paste("======= Working directory set to ", getwd(), sep="") )
+
+# check if table files exist
+# else download and generate
+if ( all(file.exists(dataset_files)) ) {
+    f_sourceScript("datasets-load.R")
+  
+} else {
+
+###################################
+# Download and save Movilens dataset
+###################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# Weong Link: https://grouplens.org/datasets/movielens/10m/
+# Correct Link: http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+print("======= Downloading main file...")
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- read.table(text = gsub("::", "\t", 
+                                  readLines( unzip(dl, exdir = ".\\data", "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, exdir = ".\\data", "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+saveRDS(movielens, file="data/downloaded/movielens.rds")
+
+str(movielens, vec.len=1)
+}
+```
+  Where we see the data set consists of *`r nrow(movielens)`* rows x `r ncol(movielens)` columns: *`r colnames(movielens)`*
+
+  So after this short inspection we continue to separate the dataset into training (edx) and testing or validation (val) parts as follows:
+
+```{r, echo=TRUE}
+# Verify working directory
+if ( getwd() != work_dir ) {
+  stop("Incorrect working directory")
+}
+print( paste("======= Working directory set to ", getwd(), sep="") )
+
+# check if table files exist
+# else download and generate
+if ( all(file.exists(dataset_files)) ) {
+    f_sourceScript("datasets-load.R")
+} else {
+  
+###################################
+	# CREATE TRAINING AND TESTING SETS
+	###################################
+
+	## Validation set will be 10% of MovieLens data
+
+	## set.seed(1) # if using R 3.6.0: set.seed(1, sample.kind = "Rounding")
+	print("======= Partitioning data... 90% train (edx), 10% test (validation)")
+	set.seed(1, sample.kind = "Rounding")
+	test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+	edx <- movielens[-test_index,]
+	temp <- movielens[test_index,]
+
+	# Make sure userId and movieId in validation set are also in edx set
+
+	print("======= Creating test (val) section...")
+	val <- temp %>% 
+		semi_join(edx, by = "movieId") %>%
+		semi_join(edx, by = "userId")
+
+	# Add rows removed from validation set back into edx set
+
+	removed <- anti_join(temp, val)
+
+	print("======= Creating train (edx) section")
+	edx <- rbind(edx, removed)
+
+	print("======= Removing temporaries")
+	rm(dl, ratings, movies, test_index, temp, removed)
+
+	# Verify working directory
+	if ( getwd() != work_dir ) {
+		stop("Incorrect working directory")
+	}
+	print("======= Working directory verifies OK")
+
+	# Keep a copy of these files for reference
+	print("======= Saving a copy of the generated files")
+	saveRDS(edx, file="data/generated/edx.rds")
+	saveRDS(val, file="data/generated/validation.rds")
+
+	###################################
+	# DOWNLOADED TRAINING AND TEST
+	# VERSION -- IN CASE OF DIFERENCES
+	# USING R v. 3.6.0
+	# NOTE THE DOWLOADED VERSIONS WERE
+	# DOWNLOADED FROM:
+	# https://drive.google.com/drive/folders/1IZcBBX0OmL9wu9AdzMBFUG8GoPbGQ38D 
+	#
+	# NOTE 5/6/19: Do not run the code below if you are using R version 3.6.0.
+	# Instead, download the edx and validation data sets from here
+	# https://drive.google.com/drive/folders/1IZcBBX0OmL9wu9AdzMBFUG8GoPbGQ38D 
+	# Update 5/12/19: If you are using R version 3.6.0, please use
+	# set.seed(1, sample.kind = "Rounding") instead of set.seed(1) in the code below.
+	#
+	# Later I was told that in case of discrepancies to use the downloaded versions
+	# which is what much of the code below establishes
+
+	print("======= Loading Manually downloaded versions...")
+
+	edx_download <- readRDS("data/downloaded/edx.rds")
+	val_download <- readRDS("data/downloaded/validation.rds")
+
+
+	print("======= Comparing generated and downloaded versions...")
+
+	e_same <- TRUE
+	ne1 <- nrow(edx)
+	ne2 <- nrow(edx_download)
+	if ( ne1 != ne2 ) {
+		print( paste("======= Downloaded and generated edx.rds files differ by", abs(ne1-ne2), "rows"))
+		e_same <- FALSE
+	} else {
+		ej <- inner_join(edx, edx_download)
+		nej <- nrow(ej)
+		if ( ne1 != nej ) {
+			print( paste("======= Downloaded and generated edx.rds files differ after inner_join by", abs(ne1-nej), "rows"))
+			e_same <- FALSE
+		}
+	}
+	if ( e_same ) {
+		print("======= edx.rds downloaded and generated are equal, using generated version")
+		saveRDS(edx, file="data/rds/edx.rds")
+	} else {
+		print( "======= Because of edx.rds file differences, using downloaded edx version." )
+		edx <- edx_download
+		saveRDS(edx, file="data/rds/edx.rds")
+	}
+
+	v_same <- TRUE
+	nv1 <- nrow(val)
+	nv2 <- nrow(val_download)
+	if ( nv1 != nv2 ) {
+		print( paste("======= Downloaded and generated validation.rds files differ by", abs(nv1-nv2), "rows"))
+		v_same <- FALSE
+	} else {
+		vj <- inner_join(val, val_download)
+		nvj <- nrow(vj)
+		if ( nv1 != nvj ) {
+			print( paste("======= Downloaded and generated validation.rds files differ after inner_join by", abs(nv1-nvj), "rows"))
+			v_same <- FALSE
+		}
+	}
+	if ( v_same ) {
+		print("======= validation.rds downloaded and generated are equal, using generated version")
+		saveRDS(val, file="data/rds/validation.rds")
+	} else {
+		print( "======= Because of validation.rds file differences, using downloaded version." )
+		val <- val_download
+		saveRDS(val, file="data/rds/validation.rds")
+	}
+}
+  
+# edx.rds and validation.rds correct files saved to ./data/used
+# objects edx and val contain correct rows
+```
+
+## Observations
+
+### Date and Time Fields  
+  
+  It is easy to note that the timestamp column is an *`r class(movielens$timestamp)`* that corresponds to an [unclassed](https://www.rdocumentation.org/packages/ff/versions/2.2-14/topics/unclass_-) [POSIXct](https://www.rdocumentation.org/packages/base/versions/3.6.0/topics/as.POSIX*) date (seconds since 1970-01-01T00:00:00UTC) and not a datetime class.
+
+
+### Distinct Users and Movies  
+  
+  The number of participating unique users rating movies and the number of unique movies that were rated in this table is given by:  
+```{r, echo=TRUE}
+library(dplyr)  
+distinct <- movielens %>%  
+  summarize(n_users = n_distinct(userId), n_movies = n_distinct(movieId))
+distinct %>% knitr::kable()
+``` 
+
+### Users and Ratings {#users-and-ratings}  
+   
+```{r, echo=TRUE}
+# Calculating ratings per user,
+# arrange in descending order
+movie_ratings <- edx %>% group_by(movieId) %>%
+  summarize(n_ratings = n(), avg_rating = mean(rating))
+
+movie_ratings <- movie_ratings %>% arrange(desc(n_ratings), desc(avg_rating))
+``` 
+  The fact that the number of users $\times$ the number of movies exceeds the number of rows in the dataset, `r nrow(movielens)`, implies that not all movies were rated by all users, which is also supported by the fact that the maximum number of users rating any one movie, `r max(movie_ratings$n_ratings)`, is smaller than the total number of users.
+
+
+### Missing Values  
+  
+  We checked for columns with missing values as follows:  
+```{r, echo=TRUE}
+colnames(movielens)[colSums(is.na(movielens)) > 0]
+```  
+  and found none. Therefore we allowed all movie ratings into this study. 
+
+
+### Duplicated Ratings  
+  
+  It is important to verify that there were no duplicated ratings from a distinct user for a particular movie, that is a rating made on one movie more than once by the same user. It is important because some of the analyses that we will conduct assumes that. This is how we checked for duplicates:  
+```{r, echo=TRUE}
+head( movielens[duplicated(movielens[c("movieId","userId")]),] )
+```
+  and again, found there were none.
+
+
+## Training and Testing Sections  
+  
+  It is customary to divide a dataset in two parts. One that serves as the training arena where we postulate and fit solutions, and in part test them, and another, exclusively reserved to test how really good our solutions are, and in a way, to serve as a safeguard against overfitting. It is therefore a good practice.  We already divided the *movielens* table with the help of the *caret* library function *createDataPartition* into a training section (90% of the data), which we called the *edx set* (edx), and a test section (the remaining 10% of the data), which we called the **validation set** (val), right after downloading the dataset,  [earlier](#inspection-analysis) in this study.
+
+
+## Ratings Distribution  {#rating-distribution}
+  
+  Here we rank movies according to how many times they are rated. The idea for this computation is to visualize the relationship between movie ratings and number of times the movie is rated. We did that earlier, when we created the [movie_ratings table](##users-and-ratings).  Here we show the average rating on the 5 most rated movies and the average rating on the least 5 rated movies like this:
+```{r, echo=TRUE}
+# Movies that are rated the most
+movie_ratings %>% head(n=5)%>% knitr::kable()
+
+# Movies that are rated the least
+movie_ratings %>% tail(n=5) %>% knitr::kable()
+``` 
+
+  We can also visualize the frequency of movie ratings like this:  
+```{r}
+library(tidyverse)
+mu <- mean(edx$rating)
+edx %>%  
+  ggplot( aes(rating) ) +
+  geom_histogram(binwidth=0.5, aes(fill=..count..)) +
+  labs(x = "Rating", y = "Times Applied") +
+  geom_vline(xintercept = mu, color = "firebrick2", linetype = "dashed") +
+	ggtitle("Ratings Distribution")
+``` 
+\begin{center}
+\textit{The graph above shows the distribution of the ratings throughout the training data set and the overall mean of the movie ratings (vertical dashed red line).}
+\end{center}
+  
+  And also show that most of the top and low rated movies are movies that are rated less than $\approx500$ times (vertical dashed red line), from which we can infer that estimates from these ratings make poor prodictors.
+```{r}
+movie_ratings %>%
+  ggplot(aes(n_ratings, avg_rating)) +
+  geom_point(shape=1, size=0.5, color="gray") + 
+  geom_smooth(linetype="dashed", size=0.5, se=FALSE) +
+  labs(x = "Times Rated", y = "Average Rating") +
+  geom_vline(xintercept = 500, color = "firebrick2", linetype = "dashed") +
+	ggtitle("Average Rating vs. Times Rated")
+```
+
+
+## Ratings per Movie {#ratings-per-movie}  
+  
+  We saw the number of ratings made on every movie in the [movie ratings table](#rating-distribution) where the top and least 5 rated movies were listed. This table can be visualized like this:  
+```{r}
+# targets
+t_ratings <- nrow(edx)
+q90 <- 0.9 * t_ratings
+
+# Find index reaching 90%
+n_ratings <- as.vector(movie_ratings$n_ratings)
+s_ratings <- Reduce("+", n_ratings, accumulate = TRUE)
+
+ndx <- min( which(s_ratings >= q90) )
+qsum <- s_ratings[ndx]
+
+# Save percentages
+pct_q <- round(100*qsum/t_ratings, rnd_pct)
+pct_movies <- round(100*ndx / nrow(movie_ratings), rnd_pct)
+
+# Plot
+ggplot(movie_ratings, aes( 1:nrow(movie_ratings), n_ratings)) +
+  geom_point(shape = 20, aes(color=n_ratings)) +
+  labs(x = "Movie Rating Rank", y = "Total Ratings", color = "Ratings") +
+  geom_vline(xintercept = ndx, color = "firebrick2", linetype = "dashed") +
+	ggtitle("Ratings per Movie")
+
+# Create user_ratings table to use them in
+# inline with text
+user_ratings <- edx %>% 
+  group_by(userId) %>%
+  summarize(n_ratings = n(), avg_rating = mean(rating))
+user_ratings <- user_ratings %>% arrange(desc(n_ratings), desc(avg_rating))
+```  
+  *The graph above shows that `r pct_movies`% of the movies received about `r pct_q`% of the ratings (area under the curve left of the dashed red line).*
+
+
+## Ratings per User  
+  
+  We can carry the same analysis to understand how users rate movies, some more than others, ranging from `r max(user_ratings$n_ratings)` ratings by the most active user to a minimum of 20, by many other least active. Here are the 5 most active and 5 of the least active rating users:  
+```{r, echo=TRUE}
+# Most active users
+user_ratings %>% head(n=5) %>% knitr::kable()
+``` 
+
+```{r, echo=TRUE}
+#Least active users
+user_ratings %>% tail(n=5) %>% knitr::kable()
+``` 
+
+  and rank participating users according to the movies they rated as follows:  
+```{r}
+# Find index reaching 90%
+n_ratings <- as.vector(user_ratings$n_ratings)
+s_ratings <- Reduce("+", n_ratings, accumulate = TRUE)
+
+ndx <- min( which(s_ratings >= q90) )
+qsum <- s_ratings[ndx]
+
+# Save percentages
+pct_q <- round(100*qsum/t_ratings, rnd_pct)
+pct_users <- round(100*ndx / nrow(user_ratings), rnd_pct)
+
+# Plot
+ggplot(user_ratings, aes( 1:nrow(user_ratings), n_ratings)) +
+  geom_point( aes(color=avg_rating) ) +
+  labs(x = "User Rating Rank", y = "Ratings", color = "Avg. Rating") +
+  geom_vline(xintercept = ndx, color = "firebrick2", linetype = "dashed") +
+	ggtitle("Ratings per User")
+```
+  *The graph above shows that `r pct_users`% of the users carried about `r pct_q`% of the movie ratings (area under the curve left of the dashed red line).*
+
+  And lastly show that most of the top and low rated movies by users are from users that have rated less than $\approx500$ movies (vertical dashed red line), from which we can infer that estimates from these ratings make poor prodictors.
+```{r, echo=TRUE}
+user_ratings %>%
+  ggplot(aes(n_ratings, avg_rating)) +
+  geom_point(shape=1, size=0.5, color="gray") + 
+  geom_smooth(linetype="dashed", size=0.5, se=FALSE) +
+  labs(x = "Movies Rated", y = "Average Rating") +
+  geom_vline(xintercept = 500, color = "firebrick2", linetype = "dashed") +
+  ggtitle("Average Rating vs. Movies Rated")
+``` 
+  
+
+## Average User Rating  
+  
+  When we plot the histogram of the average movie ratings by user, we can see that on the average, users tend to rate movies higher, that is there are more users rating movies higher than lower:
+  
+```{r} 
+user_ratings %>%
+  ggplot( aes(avg_rating) ) +
+  geom_histogram(binwidth=0.5, aes(fill=..count..)) +
+  labs(x = "Rating", color = "black") +
+  geom_vline(xintercept = mu, color = "firebrick2", linetype = "dashed") +
+  ggtitle("Average User Rating")
+```  
+  \begin{center}  
+    \textit{The figure above shows the distribution of the average ratings by individual users and the overall mean of the movie ratings (vertical dashed red line).}
+  \end{center}
+
+
+# Building the Models {#the-models}  
+
+
+## Introduction {#models-intro}
+
+  The Netflix challenge decided on a winner based on the residual RMSE over a test set. So if we define $y_{u,i}$ as the rating for movie i by user u and $\hat{y_{u,i}}$ as our prediction, then the residual root mean square error is defined as follows:  
+\begin{center}
+  $RMSE = \sqrt{\frac{1}{N}\sum\limits_{u, i}{(y_{u,i} - \hat{y_{u,i}})^2}}$
+\end{center}
+  Where $N$ is the total number of user-movie combinations on which the sum in the equation above takes place. These residuals are treated as the standard deviation of the predictions. If this number is large, say one (1) for example, we would be missing by one or more stars the target rating about 67% of the time (assuming a normal distribution of the errors), which for the Netflix challenge case was not a good reduction of the error.  
+  
+  Because we will be computing the RMSE often in this study, it is a good idea to create a function to that purpose so we would need to only include it once in the code:  
+```{r, echo=TRUE}
+f_RMSE <- function(actual_rating, predicted_rating) {
+  round( sqrt(mean((actual_rating - predicted_rating)^2, na.rm=TRUE)), rnd_rmse)
+}
+```
+
+
+## Baseline Models
+
+
+### The Naive Model {#naive-model}  
+  
+  From lessons in statistics, we know that the mean of a sample is the estimate that minimizes the residual errors acros the sample. Therefore, we apply the same principle and assume a rating system based on the mean of all the movie ratings by all users and explain the differences by random variation:  
+\begin{center}
+  $Y_{u,i} = \mu + \varepsilon_{u, i}$  
+\end{center} 
+  Where $\varepsilon_{u, i}$ represents independent errors from the given sample distribution centered at zero--the random variation, and $\mu$ represents the mean rating among all movies and users, which we compute like this:  
+```{r, echo=TRUE}
+mu <- mean(edx$rating)
+mu
+```
+  which should yield a RMSE residual to approximately the standard error of the validation sample:  
+```{r, echo=TRUE}
+sd(val$rating)
+```  
+  that we can verify when applying this prediction to the RMSE function we created earlier:  
+```{r, echo=TRUE}
+m1_rmse <- f_RMSE(val$rating, mu)
+m1_rmse
+```
+  to conclude, this model yields a RMSE of `r m1_rmse`, which we already explained to be [the result of a poor estimate](#the-models). Therefore, we will continue improving our model until we can reduce its RMSE as close to `r RMSE_goal` as possible, as explained in the [models introduction](#models-intro) of this study.
+ 
+  To keep tabs on the performance of our models, we build a table where we add each model's RMSE as we go along:
+```{r, echo=TRUE}
+result_tabs <- data.frame(Method = "Naive", RMSE = m1_rmse, Improvement="NA")
+result_tabs %>% knitr::kable()
+```
+  
+  
+### Movie Effects (ME) Model {#me-model}  
+  
+  We continuing to build our model on top the previous [naive model](#naive-model) taking to account that some movies are generally rated higher than others, so we add another term to our previous model and call it $b_i$, $b$ for bias:  
+\begin{center}
+  $Y_{u,i} = \mu + b_i + \varepsilon_{u, i}$ 
+\end{center} 
+  where $b_i$ stands for the average rating of movie $i$ after deducting the prediction of the previous [naive model](#naive-model):  
+```{r, echo=TRUE}
+avg_movie_ratings <- edx %>% group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu) ) 
+```  
+  which we use for predicting our movie ratings like this:  
+```{r, echo=TRUE}
+y_hat <- val %>% left_join(avg_movie_ratings, by='movieId') %>% 
+  mutate(pred = mu + b_i) %>% .$pred
+m2_rmse <- f_RMSE(val$rating, y_hat)
+improv <- round(100*(m1_rmse-m2_rmse)/m1_rmse, rnd_pct)
+m2_rmse
+```  
+  where we see an improvement of `r improv`% over the `r m1_rmse` achieved previously with the [naive method](#naive-method). Better, but not enough, so we continue improvement and add this result to our RMSE tabs table, as we previously indicated:  
+```{r}
+result_tabs <- bind_rows(result_tabs, data.frame(Method="Naive + ME", 
+  RMSE=m2_rmse, 
+  Improvement=paste(improv, "%", sep="")))
+result_tabs %>% knitr::kable()
+```
+
+
+### User Effects (UE) Model {#ue-model}  
+    
+  This model also builds on the [Movie Effects Model](#me-model) taking to account that different users rate movies differently and so we add another term to the previous model and call it $b_u$, for user bias:   
+\begin{center}
+  $Y_{u,i} = \mu + b_i + b_u + \varepsilon_{u, i}$
+\end{center}  
+  where $b_u$ is the user-specific effect, which we compute like this:  
+```{r, echo=TRUE}
+ avg_user_rating <- edx %>%
+   left_join(avg_movie_ratings, by='movieId') %>%
+   group_by(userId) %>%
+   summarize(b_u = mean(rating - mu - b_i))
+```  
+  which we use to predict the the movie ratings like this:  
+```{r, echo=TRUE}
+y_hat <- val %>%
+   left_join(avg_movie_ratings, by='movieId') %>%
+   left_join(avg_user_rating, by='userId') %>%
+   mutate(pred = mu + b_i + b_u) %>% .$pred
+m3_rmse <- f_RMSE(val$rating, y_hat)
+improv <- round(100*(m2_rmse-m3_rmse)/m2_rmse, rnd_pct)
+overall <- round(100*(m1_rmse-m3_rmse)/m1_rmse, rnd_pct)
+m3_rmse
+```   
+  Here we see yet another improvement  of `r improv`% over the `r m2_rmse` achieved with the previous [naive + me method](#me-model) and a whooping overal `r overall`% over the original [naive method](#naive-method). Even if this amount is lower than our target error `r RMSE_goal` we can improve residual reduction, so we continue by adding this result to our tabs table and proceed to improve our model:  
+```{r, echo=TRUE}
+result_tabs <- bind_rows(result_tabs, data.frame(Method="Naive + ME + UE", 
+  RMSE=m3_rmse, 
+  Improvement=paste(overall, "%", sep="")))
+result_tabs %>% knitr::kable()
+```
+
+\begin{center}
+  \textit{Note: Improvements displayed in this table are in relation to the Naive method alone.}
+\end{center}
+ 
+
+## Regularized Models
+
+
+### Introduction
+
+  In *Machine Learning*, **regularization** is a principle implying techniques that for most of the time are used to solve overfitting problems found in statistical models. We find an overfitting problem in a statistical model as the result of optimizing a model to perform better according to some *loss metric* within the scope of a training data section, just to find later it performs worse in the test section. However, some other times, as in this case, *regularization* is introduced to existing models with the hope that it will improve the models' performance in both the training and testing data sections. Lets see if we can do this.
+
+
+### Analysis {#reg-analysis}
+  
+  Despite the large variation in movie to movie ratings, our improvement in the residual RMSE when we added the previous [movie effects model](#me-model) was only about 6.58%. Let's investigate why wasn't this contribution larger and what we can do to improve it.
+  
+  We saw in the [ratings distribution section](#rating-distribution) that most of the best and worst rated movies were rated by very few users, in many cases by just one user, as reproduced below:  
+```{r}
+tmp <- edx %>%
+  select(movieId, title) %>% distinct() %>%
+  left_join(movie_ratings, by="movieId")
+tmp %>%
+  ggplot(aes(n_ratings, avg_rating)) +
+  geom_point(shape=1, size=0.5, color="gray") + 
+  geom_smooth(linetype="dashed", size=0.5, se=FALSE) +
+  labs(x = "Times Rated", y = "Average Rating") +
+  geom_vline(xintercept = 500, color = "firebrick2", linetype = "dashed") +
+	ggtitle("Average Rating vs. Times Rated")
+```
+\begin{center}
+\textit{Note: This plot shows how most of the top and low rated movies are rated less than 50 times or so (vertical dashed red line). Confirming the suscition that larger ratings, positive or negative, are most likely when fewer users rate a movie, and often by just one. Therefore, we should not fully trust, specially for prediction.}
+\end{center}
+
+
+### Regularized Movie Effects (RME) Model {#rme-model}
+
+  As metioned in the [analysis section](#reg-analysis), we should not fully trust predictions from ratings that result from just a few users, so we need a way to penalize these predictions as to minimize their impact to our model. To do this, we appeal to the principle of *regularization*, where the idea is to add a penalty to large values of $b_i$ with few ratings by minimizing this equation: 
+\begin{center}
+  $\frac{1}{N}\sum\limits_{u, i}{(y_{u,i} - \mu - b_i)^2} + \lambda\sum\limits_{i}{b_i^2}$
+\end{center}  
+  where the first term is the residual sum of squares, and the second, $\lambda\sum\limits_{i}{b_i^2}$, the penalty term. It can be proven through calculus that the $b_i$'s that minimize this equation are given by:
+\begin{center}
+  $\hat{b_i}(\lambda) = \frac{1}{\lambda + n_i}\sum\limits_{u=1}^{n_i}{(Y_{u,i} - \hat{\mu}})$
+\end{center}
+  where $n_i$ is the number of ratings $b$ for movie $i$. Here we can see that when $n_i$ is large, the penalty term becomes small, and when small, the penalty term becomes significant, which is the effect we want.
+  
+  Despite of this, the equations above do not prescribe a value for $\lambda$. For this reason we will have to select it from a cross validation inside the prediction code like this: 
+```{r, echo=TRUE}
+## Iterate through values of lambda
+## and choose best performance
+lambdas <- seq(0, 10, 0.1)
+rmses <- sapply(lambdas, function(lambda) {
+
+   # b_i by movie
+   b_i <- edx %>%
+      group_by(movieId) %>%
+      summarize(b_i = sum(rating - mu) / (lambda + n()))
+
+   # Calculate prediction ratings on test dataset
+   pred <- val %>%
+      left_join(b_i, by='movieId') %>%
+      mutate(pred = mu + b_i) %>% .$pred
+   
+   return( f_RMSE(val$rating, pred) )
+})
+
+# Best Lambda
+lambdas[ which.min(rmses) ]
+
+# Min RMSE
+m4_rmse <- min(rmses)
+m4_rmse
+
+# Save improvements
+improv <- round(100*(m2_rmse-m4_rmse)/m2_rmse, rnd_pct)
+overall <- round(100*(m1_rmse-m4_rmse)/m1_rmse, rnd_pct)
+```
+  Where we see the error that is returned by the regularized movie effects prediction has an improvement of `r improv`% over the previous [movie effects model](#me-model). Despite this, we accept this model and add its result to the tabs table as we did before:
+```{r, echo=TRUE}
+result_tabs <- bind_rows(result_tabs, data.frame(Method="Naive + RME", 
+  RMSE=m4_rmse, 
+  Improvement=paste(overall, "%", sep="")))
+
+# Add to RMSE tabs table
+result_tabs %>%  knitr::kable()
+```
+
+\begin{center}
+  \textit{Note: Improvements displayed in this table are in relation to the Naive method alone.}
+\end{center}
+
+
+### Regularized User Effects (RUE) Model {#rue-model}
+
+We are going to build in the previous [regularized movie effects model](#rme-model) and we are going to apply a similar argument, though this time the function we have to minimize is the following:
+\begin{center}
+  $\frac{1}{N}\sum\limits_{u, i}{(y_{u,i} - \mu - b_i - b_u)^2} + \lambda(\sum\limits_{i}{b_i^2} + \sum\limits_{u}{b_u^2})$
+\end{center}  
+As before, we also use cross validation inside the predicting algorithm to select the most suitable $\lambda$ as follows:
+```{r, echo=TRUE}
+## Iterate through values of lambda
+## and choose best performance
+lambdas <- seq(0, 10, 0.1)
+rmses <- sapply(lambdas, function(lambda) {
+
+   # b_i by movie
+   b_i <- edx %>%
+      group_by(movieId) %>%
+      summarize(b_i = sum(rating - mu) / (lambda + n()))
+
+   # b_u by users
+   b_u <- edx %>%
+     left_join(b_i, by="movieId") %>%
+      group_by(userId) %>%
+      summarize(b_u = sum(rating - mu - b_i) / (lambda + n()))
+
+   # Calculate prediction ratings on test dataset
+   pred <- val %>%
+      left_join(b_i, by='movieId') %>%
+      left_join(b_u, by='userId') %>%
+      mutate(pred = mu + b_i + b_u) %>% .$pred
+
+   # Retrieve the RMSE from the test set
+   return( f_RMSE(val$rating, pred) )
+})
+
+# Best Lambda
+lambdas[ which.min(rmses) ]
+
+# Min RMSE
+m5_rmse <- min(rmses)
+m5_rmse
+
+# Save improvements
+improv <- round(100*(m4_rmse-m5_rmse)/m4_rmse, rnd_pct)
+overall <- round(100*(m1_rmse-m5_rmse)/m1_rmse, rnd_pct)
+```
+  where we see a marked improvement of `r improv`% error reduction over the RMSE of `r m4_rmse` achieved by the previous [regulirized movie effects model](#rme-model) and of `r overall`% over the RMSE of `r m1_rmse` achieved by the [naive model](#naive-model).
+
+  So better than the previous models, and therefore add it to our RMSE tabs table:
+```{r, echo=TRUE}
+result_tabs <- bind_rows(result_tabs, data.frame(Method="Naive + RME + RUE", 
+  RMSE=m5_rmse, 
+  Improvement=paste(overall, "%", sep="")))
+
+# Arrange because RME model's RMSE is larger than ME+UE
+result_tabs %>% knitr::kable()
+```  
+
+\begin{center}
+  \textit{Note: Improvements displayed in this table are in relation to the Naive method alone.}
+\end{center}
+
+\newpage
+# Results
+
+Here are the orginized saved results of our predictive models:
+```{r, echo=TRUE}
+# Arrange in case some model's RMSE is larger than a previous one
+result_tabs %>% arrange(desc(RMSE)) %>% knitr::kable()
+```  
+
+\begin{center}
+  \textit{Note: Improvements displayed in this table are in relation to the Naive method alone.}
+\end{center}
+
+  Where it is easy to see that our residual errors were reduced as we improved on the models, except for the [regularized movie effects model](#rme-model) (which did not perform any better than its plain version, the [movie effects model](#me-model)), as we went from the basic [naive model](#naive-model) to the more complex [regularized movie and user effects model](#rue-model).
+  
+  We achieved an RMSE of `r m5_rmse`, which would have not been enough to have us win the challenge, but low enough to have us included in the top 10 list. Althogh we did not beat the winning RMSE of `r RMSE_goal`, we must say to our credit that in their solution, the Netflix challenge winning team described using gradient boosted decision trees to combine over 500 models, compared to our simple 5 models. [(see Chen.)](https://webcache.googleusercontent.com/search?q=cache:UAmrKjnPsZUJ:https://blog.echen.me/2011/10/24/winning-the-netflix-prize-a-summary/+&cd=5&hl=en&ct=clnk&gl=us)
+
+\newpage
+# Conclusion  
+  
+  In this study we used a stepwise refinement process on the predictive models that were proposed for exploration in the implementation of a simple, yet optimal, system to predict a movie rating for rating users. We built, tested, and improved the models as we went along, from the [naive model](#naive-model), throgh the inclusion of [movie effects](#me-model), [movie and user effects](#ue-model), [regulirized movie effects](#rme-model), and up to the inclusion of both the [regulirized movie and user effects](#rue-model).  
+  
+  It is worth mentioning that many other predictive methods, such as KNN, Random Forests, Matrix Factorization, Singular Value Decomposition (SVD), Principal Components Analysis (PCA), among others, could have been used to minimize the residuals even further, though exploration of these methods was prohibitive considering the amount of time reserved for this study.  
+  
+  I was surprised by the fact that the [regularized movie effects model](#rme-model) did not offer any improvement over the more simple[movie effects model](#me-model) version, and of how little improvement the [regularized user effects model](#rue-model) offered over its [simple counterpart version](#ue-model).
+  
+  Finally, as we may have noticed from the [inspection and analysis](#inspection-analysis) section of this study, the *movielens* dataset contains many other features that may have been worth exploring as potential predictors, such as the movie release year, the date of rating, and the movie genre, that may have served to reduce the remaining residuals even lower. However, again because time constraints, we limited this study to the inclusion of the *movieId* and *userId* predictors alone.
+
